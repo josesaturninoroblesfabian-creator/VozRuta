@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONTokener
+import org.json.JSONObject
 import pe.vozruta.app.model.Profile
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
@@ -39,7 +40,7 @@ import kotlin.math.roundToInt
 enum class SceneCamera(val title: String) { EXTERIOR("Exterior"), RAMP("Rampa y abordaje"), INTERIOR("Interior") }
 
 @Composable
-fun BusScene(simulation: BusSimulation, profile: Profile, camera: SceneCamera, onFailure: () -> Unit) {
+fun BusScene(simulation: BusSimulation, profile: Profile, camera: SceneCamera, routeLabel: String, onFailure: () -> Unit) {
     var ready by remember { mutableStateOf<WebView?>(null) }
     var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     val inputs by rememberUpdatedState(listOf(simulation.stage.ordinal, simulation.fraction, camera.ordinal, profile.ordinal))
@@ -51,11 +52,11 @@ fun BusScene(simulation: BusSimulation, profile: Profile, camera: SceneCamera, o
             delay(20_000)
             if (bitmap == null) failure()
         }
-        LaunchedEffect(ready, height) {
+        LaunchedEffect(ready, height, routeLabel) {
             val web = ready ?: return@LaunchedEffect
             // Keep one frame in flight. Compose presents WebGL frames independently of the WebView compositor.
             snapshotFlow { inputs }.conflate().collect { values ->
-                val program = "window.renderBusFrame?.(${values.joinToString(",")},$width,$height) ?? null"
+                val program = "window.renderBusFrame?.(${values.joinToString(",")},$width,$height,${JSONObject.quote(routeLabel)}) ?? null"
                 val result = web.evaluate(program)
                 val frame = withContext(Dispatchers.Default) { decodeFrame(result) }
                 if (frame != null) bitmap = frame else failure()

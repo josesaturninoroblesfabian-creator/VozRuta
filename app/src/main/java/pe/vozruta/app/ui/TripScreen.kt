@@ -1,7 +1,5 @@
 package pe.vozruta.app.ui
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -9,12 +7,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
@@ -28,6 +20,8 @@ import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.google.maps.android.compose.rememberUpdatedMarkerState
 import pe.vozruta.app.BuildConfig
+import pe.vozruta.app.maps.Destination
+import pe.vozruta.app.maps.TravelMode
 import pe.vozruta.app.maps.TransitPlan
 import pe.vozruta.app.model.BusStage
 import pe.vozruta.app.model.Geo
@@ -44,13 +38,19 @@ import pe.vozruta.app.viewmodel.Screen
     state: JourneyState,
     model: JourneyViewModel,
     locate: (Boolean) -> Unit,
-    maps: (String, String, String) -> Unit,
     global: () -> Unit,
     stopsDialog: () -> Unit,
-    boardDialog: () -> Unit
+    boardDialog: () -> Unit,
+    navigate: (Stop, TravelMode) -> Unit
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     val trip = state.trip
+    LaunchedEffect(state.boardingPrompt) {
+        if (state.boardingPrompt) {
+            confirm = trip != null
+            model.clearBoardingPrompt()
+        }
+    }
     val guide = state.guide
     val plan = state.plans.getOrNull(state.selected)
     val pilot = trip != null || (plan == null && guide == null && !state.loading)
@@ -62,7 +62,8 @@ import pe.vozruta.app.viewmodel.Screen
             else -> "Planifica tu viaje"
         },
         subtitle = when {
-            trip != null -> "Corredor Huánuco–Ambo · Unidad de demostración"
+            trip != null -> if (trip.cityRoute == 0) "Corredor Huánuco–Ambo · Unidad de demostración"
+                else "Ruta ${trip.cityRoute} · Unidad de demostración"
             guide != null -> "Referencia del corredor Huánuco–Ambo"
             plan != null -> "Datos de transporte de Google Maps"
             else -> "Elige un destino del piloto o busca en otra ciudad."
@@ -84,9 +85,9 @@ import pe.vozruta.app.viewmodel.Screen
         }
     }
     if (trip != null) {
-        PilotSummary(trip, model, state, { confirm = true }, boardDialog, maps)
+        PilotSummary(trip, model, state, { confirm = true }, boardDialog, navigate)
     }
-    if (guide != null) GuideDetails(guide, model, state, maps)
+    if (guide != null) GuideDetails(guide, model, navigate)
     if (plan != null) {
         state.plans.forEachIndexed { index, option ->
             if (state.plans.size > 1) {
@@ -117,10 +118,12 @@ import pe.vozruta.app.viewmodel.Screen
         val simulation = state.simulation
         val bus = if (pilot) remember(line, trip, simulation) {
             if (simulation.stage.ordinal <= BusStage.APPROACH.ordinal) {
-                val board = trip?.board ?: Pilot.stops.first()
-                val index = Pilot.stops.indexOf(board)
-                val opposite = if (index > 0) Pilot.stops[index - 1] else Pilot.stops[1]
-                val incoming = model.pilotLine(PilotTrip(opposite, board, listOf(opposite, board), "", 0)).takeLast(6)
+                val code = trip?.cityRoute ?: 0
+                val stops = Pilot.network(code)
+                val board = trip?.board ?: stops.first()
+                val index = stops.indexOf(board)
+                val opposite = if (index > 0) stops[index - 1] else stops[1]
+                val incoming = model.pilotLine(PilotTrip(opposite, board, listOf(opposite, board), "", 0, code)).takeLast(6)
                 val progress = if (simulation.stage == BusStage.ROUTE) simulation.fraction * .55f
                     else .55f + simulation.fraction * .45f
                 pointAlong(incoming, progress)
@@ -143,6 +146,8 @@ import pe.vozruta.app.viewmodel.Screen
     }
     PanelCard {
         Primary("Elegir destino del piloto", stopsDialog, Modifier.fillMaxWidth())
+        Secondary("Ruta 1 · Plaza de Armas a Hospital", { model.cityRoute(1) }, Modifier.fillMaxWidth())
+        Secondary("Ruta 2 · Plaza de Armas a UNHEVAL", { model.cityRoute(2) }, Modifier.fillMaxWidth())
         Secondary("Explorar otras ciudades", global, Modifier.fillMaxWidth())
         Secondary("Buscar paradero cercano", { locate(true) }, Modifier.fillMaxWidth())
     }
@@ -160,7 +165,7 @@ import pe.vozruta.app.viewmodel.Screen
 }
 
 @Composable private fun PilotSummary(trip: PilotTrip, model: JourneyViewModel, state: JourneyState, confirm: () -> Unit, chooseBoard: () -> Unit,
-    maps: (String, String, String) -> Unit) {
+    navigate: (Stop, TravelMode) -> Unit) {
     PanelCard {
         Tag("BUS INCLUSIVO · DEMOSTRACIÓN")
         Text("Subida · ${trip.board.name}", style = MaterialTheme.typography.titleMedium)
@@ -174,12 +179,13 @@ import pe.vozruta.app.viewmodel.Screen
         Primary(if (state.pending) "Enviando…" else "Solicitar abordaje inclusivo", confirm, Modifier.fillMaxWidth(), !state.pending)
         Secondary("Cambiar punto de subida", chooseBoard, Modifier.fillMaxWidth())
         Secondary("Escuchar este viaje", { model.replay(model.describeTrip(trip)) }, Modifier.fillMaxWidth())
-        Secondary("Camino al punto de subida", { maps(state.location?.coordinate.orEmpty(), trip.board.geo.coordinate, "walking") }, Modifier.fillMaxWidth())
+        Secondary("Guía GPS al punto de subida", { navigate(trip.board, TravelMode.WALK) }, Modifier.fillMaxWidth())
+        Secondary("Seguir viaje en vehículo", { navigate(trip.exit, TravelMode.PASSENGER) }, Modifier.fillMaxWidth())
         Secondary("Ver bus y simulación", { model.navigate(Screen.BUS) }, Modifier.fillMaxWidth())
     }
 }
 
-@Composable private fun GuideDetails(guide: Guide, model: JourneyViewModel, state: JourneyState, maps: (String, String, String) -> Unit) {
+@Composable private fun GuideDetails(guide: Guide, model: JourneyViewModel, navigate: (Stop, TravelMode) -> Unit) {
     PanelCard {
         Text(guide.stop.name, style = MaterialTheme.typography.titleMedium)
         Text(guide.detail, color = Ash)
@@ -188,7 +194,7 @@ import pe.vozruta.app.viewmodel.Screen
             Steps(guide.walking, model)
         }
         Primary("Escuchar guía", { model.replay(guide.walking?.let(model::describePlan) ?: "${guide.stop.name}. ${guide.detail}") }, Modifier.fillMaxWidth())
-        Secondary("Abrir indicaciones a pie", { maps(state.location?.coordinate.orEmpty(), guide.stop.geo.coordinate, "walking") }, Modifier.fillMaxWidth())
+        Secondary("Navegar a pie con GPS", { navigate(guide.stop, TravelMode.WALK) }, Modifier.fillMaxWidth())
     }
 }
 
@@ -216,8 +222,7 @@ import pe.vozruta.app.viewmodel.Screen
     var loaded by remember { mutableStateOf(false) }
     var timedOut by remember { mutableStateOf(false) }
     PanelCard {
-        Text(if (BuildConfig.MAPS_ENABLED) "Mapa del trayecto" else "Esquema del trayecto",
-            style = MaterialTheme.typography.titleMedium)
+        Text("Mapa del trayecto", style = MaterialTheme.typography.titleMedium)
         if (BuildConfig.MAPS_ENABLED && mapPoints.isNotEmpty()) {
             val camera = rememberCameraPositionState {
                 position = CameraPosition.fromLatLngZoom(mapPoints.first().latLng, 13f)
@@ -256,54 +261,11 @@ import pe.vozruta.app.viewmodel.Screen
             if (timedOut) Text("El mapa aún no se ha cargado. Revisa la conexión y la configuración de Google Maps.", color = Warning)
             Secondary("Centrar recorrido", { center++ }, Modifier.fillMaxWidth())
         } else if (mapPoints.isNotEmpty()) {
-            Schematic(points, stops, usefulUser, bus)
-            Text(if (pilot) "Trazado de referencia · © OpenStreetMap contributors" else "Vista sin mapa base", color = Ash)
+            StreetMap(points, usefulUser, remember(stops) { stops.map { Destination(it.name, it.geo) } }, bus, recenter = center)
+            Secondary("Centrar recorrido", { center++ }, Modifier.fillMaxWidth())
         }
         Secondary("Obtener mi ubicación", locate, Modifier.fillMaxWidth())
     }
 }
 
-@Composable private fun Schematic(points: List<Geo>, stops: List<Stop>, user: Geo?, bus: Geo?) {
-    val all = points + stops.map { it.geo } + listOfNotNull(user)
-    if (all.isEmpty()) return
-    Canvas(Modifier.fillMaxWidth().height(206.dp).clip(RoundedCornerShape(13.dp)).background(Background)
-        .semantics { contentDescription = "Esquema del trayecto. Consulta el listado de paradas para leer sus nombres." }) {
-        val minX = all.minOf { it.lng }
-        val maxY = all.maxOf { it.lat }
-        val westEast = (all.maxOf { it.lng } - minX).coerceAtLeast(.00012)
-        val northSouth = (maxY - all.minOf { it.lat }).coerceAtLeast(.00012)
-        val margin = 20.dp.toPx()
-        val scale = minOf((size.width - margin * 2) / westEast, (size.height - margin * 2) / northSouth)
-        val left = (size.width - westEast * scale) / 2
-        val top = (size.height - northSouth * scale) / 2
-        fun position(geo: Geo) = Offset((left + (geo.lng - minX) * scale).toFloat(),
-            (top + (maxY - geo.lat) * scale).toFloat())
-        val interval = 22.dp.toPx()
-        for (x in 1..(size.width / interval).toInt()) for (y in 1..(size.height / interval).toInt()) {
-            drawCircle(Line, 1.dp.toPx(), Offset(x * interval, y * interval))
-        }
-        if (points.size > 1) {
-            val path = Path().apply {
-                val first = position(points.first())
-                moveTo(first.x, first.y)
-                points.drop(1).forEach { point -> position(point).let { lineTo(it.x, it.y) } }
-            }
-            drawPath(path, ColorPath, style = Stroke(11.dp.toPx(), cap = StrokeCap.Round))
-            drawPath(path, Accent, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
-        }
-        stops.forEach { stop ->
-            drawCircle(Background, 5.dp.toPx(), position(stop.geo))
-            drawCircle(Accent, 4.dp.toPx(), position(stop.geo), style = Stroke(1.5.dp.toPx()))
-        }
-        user?.let { drawCircle(UserDot, 5.dp.toPx(), position(it)) }
-        bus?.let {
-            val offset = position(it)
-            val clamped = Offset(offset.x.coerceIn(margin, size.width - margin), offset.y.coerceIn(margin, size.height - margin))
-            drawCircle(Accent, 7.dp.toPx(), clamped)
-            drawCircle(Ink, 3.dp.toPx(), clamped)
-        }
-    }
-}
-private val ColorPath = androidx.compose.ui.graphics.Color(0xFF425121)
-private val UserDot = androidx.compose.ui.graphics.Color(0xFF83D3FD)
 private val Geo.latLng get() = LatLng(lat, lng)

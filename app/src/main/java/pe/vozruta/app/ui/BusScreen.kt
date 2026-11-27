@@ -23,16 +23,30 @@ import pe.vozruta.app.viewmodel.JourneyViewModel
 
 @Composable internal fun BusScreen(state: JourneyState, model: JourneyViewModel, locate: () -> Unit) {
     val sim = state.simulation
+    val trip = state.trip
     var camera by rememberSaveable { mutableStateOf(SceneCamera.EXTERIOR) }
+    var automatic by rememberSaveable { mutableStateOf(true) }
     var failed by remember { mutableStateOf(false) }
-    Section("Autobús inclusivo", "Unidad VR–01 · Huánuco–Ambo")
+    val shown = if (automatic) when (sim.stage) {
+        BusStage.RAMP, BusStage.ARRIVED -> SceneCamera.RAMP
+        BusStage.ASSIST -> if (sim.fraction > .64f) SceneCamera.INTERIOR else SceneCamera.RAMP
+        else -> SceneCamera.EXTERIOR
+    } else camera
+    val label = when (trip?.cityRoute) { 1 -> "R1 HOSPITAL"; 2 -> "R2 UNHEVAL"; else -> "HUÁNUCO / AMBO" }
+    Section("Autobús inclusivo", "Unidad TI–04 · $label")
     PanelCard {
         Tag("SIMULACIÓN 3D")
-        if (!failed) BusScene(sim, state.profile, camera) { failed = true }
+        if (!failed) BusScene(sim, state.profile, shown, label) { failed = true }
         else Text("El dispositivo no pudo dibujar la escena 3D. Puedes continuar con los estados y avisos.", color = Warning)
         Text(sim.stage.title, style = MaterialTheme.typography.titleMedium, color = Accent,
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         Text(sim.stage.messageFor(state.profile), color = Ash)
+        Text("Velocidad simulada · ${sim.speedKmh} km/h", color = Ash)
+        trip?.let {
+            val label = if (sim.stage.ordinal < BusStage.TRAVEL.ordinal) "Subida · ${it.board.name}"
+                else "Bajada · ${it.exit.name}"
+            Text(label, color = Ash)
+        }
         LinearProgressIndicator(progress = { sim.routeProgress }, modifier = Modifier.fillMaxWidth(),
             color = Accent, trackColor = Raised)
     }
@@ -40,7 +54,7 @@ import pe.vozruta.app.viewmodel.JourneyViewModel
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             Primary(when {
                 sim.running -> "Pausar"
-                sim.stage == BusStage.ARRIVED -> "Reiniciar"
+                sim.stage == BusStage.ARRIVED && sim.fraction >= 1f -> "Reiniciar"
                 sim.elapsed > 0 -> "Continuar"
                 else -> "Iniciar"
             }, model::toggleSimulation, Modifier.weight(1f))
@@ -51,15 +65,16 @@ import pe.vozruta.app.viewmodel.JourneyViewModel
             model.simulationRamp()
         }, Modifier.fillMaxWidth())
         ToggleRow("Voz interna del bus", sim.announcements, model::simulationVoice)
-        Secondary("Escuchar esta etapa", { model.replay("Simulación. ${sim.stage.messageFor(state.profile)}") }, Modifier.fillMaxWidth())
+        Secondary("Escuchar esta etapa", { model.replay("Simulación. ${sim.stage.messageFor(state.profile)}", bus = true) }, Modifier.fillMaxWidth())
     }
     PanelCard {
         Text("Cámara", style = MaterialTheme.typography.titleMedium)
+        ToggleRow("Cámara automática", automatic) { automatic = it }
         Column(Modifier.selectableGroup()) {
             SceneCamera.entries.forEach { view ->
-                val selected = view == camera
+                val selected = view == shown
                 Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                    .selectable(selected, role = Role.RadioButton) { camera = view },
+                    .selectable(selected, role = Role.RadioButton) { automatic = false; camera = view },
                     verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected, onClick = null)
                     Text(view.title, Modifier.padding(start = 10.dp))
@@ -67,7 +82,6 @@ import pe.vozruta.app.viewmodel.JourneyViewModel
             }
         }
     }
-    val trip = state.trip
     val line = remember(trip) { model.pilotLine(trip) }
     RouteMap(line, trip?.stops ?: Pilot.stops, state.location,
         remember(line, sim.routeProgress) { pointAlong(line, sim.routeProgress) }, true, locate)

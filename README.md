@@ -10,12 +10,20 @@
 
 El piloto de demostración se puede recorrer sin cuentas de Google Cloud. El reconocimiento y la síntesis de voz dependen de los servicios y las voces instalados en el dispositivo. En modo avión siguen disponibles los comandos escritos, la selección por toque, los datos locales y la simulación.
 
+## Navegación en tiempo real
+
+Abre **Mapa → Elegir destino** y selecciona una referencia, busca una dirección con su ciudad o escribe latitud y longitud. También puedes marcar un punto manteniendo pulsado el mapa. Elige **A pie**, **Conduciendo** o **En un vehículo** y pulsa **Activar GPS y seguir**. Desde **Viaje** puedes abrir la guía al punto de subida o seguir tu viaje hasta el destino.
+
+El mapa usa calles de OpenStreetMap. El cálculo vial usa los perfiles de coche y peatón del servidor de demostración OSRM. La app mueve el marcador con el GPS en primer plano, anuncia maniobras en español, muestra distancia y tiempo estimados, recalcula si detecta que te apartaste de la ruta y anuncia la llegada. El GPS deja de actualizarse al salir de la pantalla, minimizar la app o detener el seguimiento. La búsqueda de direcciones depende del geocodificador de Android. El modo de pasajero sigue una ruta vial estimada y la consulta de transporte público muestra líneas y horarios cuando el proveedor dispone de ellos.
+
+La app envía origen y destino a OSRM al solicitar o recalcular una ruta. Las actualizaciones intermedias se procesan en el dispositivo. El servicio de demostración necesita internet y tiene límites de uso. Para un despliegue a escala, usa infraestructura propia o un proveedor con acuerdo de servicio. [Política de mapas OSM](https://operations.osmfoundation.org/policies/tiles/) · [Política del servidor de rutas](https://routing.openstreetmap.de/about.html)
+
 ## Probar la app
 
 1. En **Accesibilidad**, elige guía auditiva o silla de ruedas. Los avisos hablados se pueden activar y desactivar.
 2. Pulsa **Hablar con VozRuta** o **Escribir comando** y prueba «Ir a UNHEVAL», «Ir a Amarilis», «Ir al Hospital» o «Paradero cercano». **Ver todos** muestra los nueve destinos de referencia. También puedes cambiar el punto de subida.
 3. En **Viaje**, escucha el itinerario, consulta un precio de ejemplo y pulsa **Solicitar abordaje inclusivo**. Confirma la solicitud local para verla en **Central**. Si habilitas el servidor de pruebas, la petición se envía a la bandeja conectada.
-4. En **Bus 3D**, usa **Simular llegada y rampa**, cambia la cámara o pausa la escena. El perfil cambia la animación y el mensaje de asistencia. El punto del autobús en el mapa sigue la misma simulación.
+4. En **Bus 3D**, usa **Simular llegada y rampa**, selecciona cámara exterior, de abordaje o interior, o activa el cambio automático. La escena adaptada del HTML del equipo incluye conductor, asistente, discapacidad visual y silla de ruedas, paradero accesible, anclajes y descenso. Android diferencia la voz de la guía y la del bus cuando hay dos voces españolas instaladas y usa un tono distinto si hay una sola. El punto del autobús en el mapa sigue la simulación.
 5. En **Explorar otras ciudades**, escribe direcciones con ciudad y país, o usa el GPS como origen. La app abre Google Maps si se ejecuta sin el servidor. Con el servidor y Google Routes habilitados, muestra los itinerarios, horarios, distancias y tarifas que proporcione la fuente dentro de VozRuta.
 
 Cuando se permite el GPS, la app solicita una posición puntual en primer plano. El «paradero cercano» busca referencias del piloto en un radio de 3 km. Con Google Routes habilitado, también puede mostrar indicaciones peatonales paso a paso. El resultado actualmente carece de un inventario de accesibilidad verificado en campo.
@@ -30,7 +38,7 @@ MAPS_API_KEY=pega_aquí_tu_clave
 
 Habilita **Maps SDK for Android** y la facturación en Google Cloud. Restringe la clave a ese SDK, al paquete `pe.vozruta.app` y al SHA-1 del certificado con que firmes el APK. Obtén el SHA-1 de depuración con `.\gradlew.bat :app:signingReport`. Reconstruye la app cada vez que cambies las propiedades. [Configuración oficial de Maps SDK](https://developers.google.com/maps/documentation/android-sdk/get-api-key)
 
-Sin clave, el piloto muestra un esquema del trazado con OpenStreetMap. Para una búsqueda global devuelta por el servidor, la app muestra el itinerario como lista y reserva la polilínea de Google para el mapa de Google.
+Sin clave, el piloto muestra su trazado sobre un mapa real de calles de OpenStreetMap. El mapa GPS y las rutas viales de OSRM funcionan sin clave de Google. Para una búsqueda global devuelta por Google Routes, la app muestra el itinerario como lista y reserva la polilínea para el mapa de Google.
 
 ## Activar la central y la búsqueda global
 
@@ -62,6 +70,7 @@ La clave `ROUTES_API_KEY` permanece en el servidor. Habilita **Routes API**, res
 
 - Los nombres y coordenadas ubican referencias geográficas. Hospital, Yanag y Conchamarca usan referencias del sector que deben revisarse con el equipo local. Un marcador por sí solo no confirma que se pueda subir o cruzar en ese punto.
 - La geometría ilustrativa sigue la red vial de OpenStreetMap y se calculó con OSRM. Los horarios, costos, movimientos de la unidad y avisos del bus corresponden a la demostración. La central conectada sí intercambia solicitudes y confirmaciones de prueba. Se necesita integrar a un operador para reservar transporte y recibir GPS de flota reales.
+- Los comandos «ruta uno» y «ruta dos» abren los itinerarios urbanos del HTML del equipo. El primero conecta Plaza de Armas, Puente Calicanto, Amarilis y Hospital Regional. El segundo conecta Plaza de Armas y UNHEVAL. Las ubicaciones de referencia se contrastaron con el piloto y fuentes locales. [Plaza de Armas](https://consultasenlinea.mincetur.gob.pe/fichaInventario/index.aspx?cod_Ficha=1729) · [Puente Calicanto](https://consultasenlinea.mincetur.gob.pe/fichaInventario/index.aspx?cod_Ficha=680)
 - El servicio de pruebas usa tokens de grupo y retiene las solicitudes en la base SQLite local. Para publicar, se requieren cuentas y permisos por operador y usuario, caducidad y eliminación de datos, un acuerdo con el operador y pruebas de campo con usuarios de TalkBack y personas con distintas necesidades de movilidad.
 - El modelo WebGL explica la secuencia de abordaje. El prototipo de vehículo todavía requiere diseño mecánico, evaluación de riesgos, ensayos y homologación antes de transportar a personas.
 

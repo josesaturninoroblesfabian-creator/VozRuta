@@ -15,7 +15,8 @@ from threading import Lock
 
 STAGES = ("ROUTE", "APPROACH", "RAMP", "ASSIST", "TRAVEL", "ARRIVED")
 STOPS = frozenset(("Mercado Viejo", "Hospital Regional", "Mercado Nuevo", "Amarilis",
-                   "UNHEVAL", "Rosavero", "Yanag / El Cuartel", "Entrada a Conchamarca", "Mercado de Ambo"))
+                   "UNHEVAL", "Rosavero", "Yanag / El Cuartel", "Entrada a Conchamarca", "Mercado de Ambo",
+                   "Plaza de Armas", "Puente Calicanto"))
 SUPPORT = frozenset(("apoyo de abordaje", "guía verbal y hasta el asiento", "rampa y anclaje de silla"))
 ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 FIELD_MASK = ",".join((

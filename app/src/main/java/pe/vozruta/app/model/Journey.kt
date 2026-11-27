@@ -42,7 +42,7 @@ enum class BusStage(val title: String, val seconds: Int, val message: String) {
     RAMP("Rampa desplegada", 6, "La unidad está detenida. Puertas abiertas y rampa desplegada."),
     ASSIST("Asistencia a bordo", 7, "El asistente te acompaña y comprueba que estés en una posición segura."),
     TRAVEL("En traslado", 18, "Continuamos el viaje. Avisaremos cuando nos acerquemos a tu destino."),
-    ARRIVED("Llegada a destino", 1, "Llegamos a tu destino. Espera el apoyo del asistente para bajar.");
+    ARRIVED("Llegada a destino", 7, "Llegamos a tu destino. Espera el apoyo del asistente para bajar.");
 
     fun messageFor(profile: Profile): String = if (this != ASSIST) message else when (profile) {
         Profile.WHEELCHAIR -> "El asistente acompaña el abordaje y verifica el anclaje de la silla antes de salir."
@@ -51,9 +51,13 @@ enum class BusStage(val title: String, val seconds: Int, val message: String) {
     }
 }
 
-data class PilotTrip(val board: Stop, val exit: Stop, val stops: List<Stop>, val fare: String, val minutes: Int) {
+data class PilotTrip(val board: Stop, val exit: Stop, val stops: List<Stop>, val fare: String, val minutes: Int,
+    val cityRoute: Int = 0) {
     fun departure(now: LocalTime = LocalTime.now(ZoneId.of("America/Lima"))): String {
-        val offset = if (board.minute <= exit.minute) board.minute else Pilot.stops.last().minute - board.minute
+        val route = Pilot.network(cityRoute)
+        val offset = if (cityRoute == 0) {
+            if (board.minute <= exit.minute) board.minute else route.last().minute - board.minute
+        } else 6 * route.indexOf(board).coerceAtLeast(0)
         val first = 6 * 60 + offset
         val current = now.hour * 60 + now.minute + if (now.second > 0 || now.nano > 0) 1 else 0
         val departure = ((current - first).coerceAtLeast(0) + 29) / 30
@@ -77,23 +81,37 @@ object Pilot {
         Stop("ambo", "Mercado de Ambo", "Ambo", Geo(-10.12685, -76.20496), 68, listOf("ambo", "mercado de ambo"))
     )
 
+    private val plaza = Stop("plaza", "Plaza de Armas", "Huánuco", Geo(-9.92949, -76.23976), 0, listOf("plaza de armas", "plaza mayor"))
+    private val bridge = Stop("calicanto", "Puente Calicanto", "Huánuco", Geo(-9.93230, -76.23643), 5, listOf("calicanto"))
+    val cityStops = listOf(plaza, bridge)
+
+    fun network(cityRoute: Int) = when (cityRoute) {
+        1 -> listOf(plaza, bridge, stops.first { it.id == "amarilis" }, stops.first { it.id == "hospital" })
+        2 -> listOf(plaza, stops.first { it.id == "unheval" })
+        else -> stops
+    }
+
     fun stop(text: String): Stop? {
         val words = " ${normalize(text)} "
-        return stops.firstOrNull { stop -> stop.aliases.any { " $it " in words } }
+        return (stops + cityStops).firstOrNull { stop -> stop.aliases.any { " $it " in words } }
     }
 
     fun nearest(location: Geo, excluded: Stop? = null): Stop? =
-        stops.asSequence().filter { it != excluded }.minByOrNull { it.geo.metersTo(location) }
+        (stops + cityStops).asSequence().filter { it != excluded }.minByOrNull { it.geo.metersTo(location) }
             ?.takeIf { it.geo.metersTo(location) <= 3_000 }
 
-    fun trip(exit: Stop, location: Geo?, board: Stop? = null): PilotTrip {
-        val origin = board?.takeUnless { it == exit } ?: location?.let { nearest(it, exit) } ?: stops.first { it != exit }
+    fun trip(exit: Stop, location: Geo?, board: Stop? = null, cityRoute: Int = if (exit in cityStops) 1 else 0): PilotTrip {
+        val stops = network(cityRoute)
+        val nearest = location?.let { point ->
+            stops.filter { it != exit }.minByOrNull { it.geo.metersTo(point) }?.takeIf { it.geo.metersTo(point) <= 3_000 }
+        }
+        val origin = board?.takeIf { it != exit && it in stops } ?: nearest ?: stops.first { it != exit }
         val from = stops.indexOf(origin)
         val to = stops.indexOf(exit)
         val path = if (from < to) stops.subList(from, to + 1) else stops.subList(to, from + 1).asReversed()
-        val minutes = abs(origin.minute - exit.minute)
+        val minutes = if (cityRoute == 0) abs(origin.minute - exit.minute) else abs(from - to) * 6
         val fare = if (minutes <= 24) "S/ 2,00" else if (minutes <= 43) "S/ 3,50" else "S/ 5,00"
-        return PilotTrip(origin, exit, path, fare, minutes)
+        return PilotTrip(origin, exit, path, fare, minutes, cityRoute)
     }
 }
 

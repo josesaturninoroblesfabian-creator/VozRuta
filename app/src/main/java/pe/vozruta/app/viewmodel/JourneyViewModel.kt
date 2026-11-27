@@ -30,8 +30,8 @@ import pe.vozruta.app.simulation3d.BusSimulation
 import java.util.UUID
 import kotlin.math.ceil
 
-enum class Screen(val title: String) { HOME("Inicio"), TRIP("Viaje"), BUS("Bus 3D"), OPERATOR("Central") }
-data class Announcement(val id: Long, val text: String)
+enum class Screen(val title: String) { HOME("Inicio"), TRIP("Viaje"), NAVIGATION("Mapa"), BUS("Bus 3D"), OPERATOR("Central") }
+data class Announcement(val id: Long, val text: String, val bus: Boolean = false)
 data class Guide(val stop: Stop, val detail: String, val walking: TransitPlan? = null)
 data class JourneyState(
     val screen: Screen = Screen.HOME,
@@ -43,6 +43,7 @@ data class JourneyState(
     val selected: Int = 0,
     val simulation: BusSimulation = BusSimulation(),
     val demoRequest: Boolean = false,
+    val boardingPrompt: Boolean = false,
     val pending: Boolean = false,
     val live: Boarding? = null,
     val queue: List<Boarding> = emptyList(),
@@ -64,21 +65,27 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     ))
     val state = mutable.asStateFlow()
     private var speechId = 0L
+    private var lastSpeech: Announcement? = null
     private var search: Job? = null
     private var riderPoll: Job? = null
     private var operatorPoll: Job? = null
     private var requestKey: String? = prefs.getString("requestKey", null)
     private var requestFingerprint: String? = prefs.getString("requestFingerprint", null)
     private var active = false
-    private val roads by lazy {
-        val json = JSONArray(application.assets.open("pilot-roads.json").bufferedReader().use { it.readText() })
-        List(json.length()) { leg ->
+    private fun legs(json: JSONArray): List<List<Geo>> {
+        return List(json.length()) { leg ->
             val points = json.getJSONArray(leg)
             List(points.length()) { i ->
                 val coordinate = points.getJSONArray(i)
                 Geo(coordinate.getDouble(0), coordinate.getDouble(1))
             }
         }
+    }
+    private fun roadAsset(name: String) = JSONArray(getApplication<Application>().assets.open(name).bufferedReader().use { it.readText() })
+    private val roads by lazy { legs(roadAsset("pilot-roads.json")) }
+    private val cityRoads by lazy {
+        val data = roadAsset("city-roads.json")
+        List(data.length()) { route -> legs(data.getJSONArray(route)) }
     }
 
     init {
@@ -90,7 +97,7 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
                 val next = before.simulation.tick(0.1f)
                 mutable.update { it.copy(simulation = next) }
                 if (before.simulation.stage != next.stage && next.announcements) {
-                    announce("Simulación. ${next.stage.messageFor(before.profile)}")
+                    announce("Simulación. ${next.stage.messageFor(before.profile)}", bus = true)
                 }
             }
         }
@@ -108,7 +115,10 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun navigate(screen: Screen) {
-        mutable.update { it.copy(screen = screen, message = null) }
+        mutable.update {
+            val simulation = if (screen == Screen.NAVIGATION) it.simulation.copy(running = false) else it.simulation
+            it.copy(screen = screen, message = null, simulation = simulation)
+        }
         updateOperator()
     }
 
@@ -126,11 +136,15 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
         mutable.update { it.copy(voiceEnabled = enabled, speech = null) }
     }
 
-    fun announce(text: String) {
-        if (state.value.voiceEnabled) mutable.update { it.copy(speech = Announcement(++speechId, text)) }
+    fun announce(text: String, bus: Boolean = false) {
+        if (state.value.voiceEnabled) replay(text, bus)
     }
 
-    fun replay(text: String) = mutable.update { it.copy(speech = Announcement(++speechId, text)) }
+    fun replay(text: String, bus: Boolean = false) {
+        val event = Announcement(++speechId, text, bus)
+        lastSpeech = event
+        mutable.update { it.copy(speech = event) }
+    }
 
     fun location(geo: Geo?) {
         mutable.update { it.copy(location = geo) }
@@ -139,22 +153,75 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
 
     fun command(text: String): Boolean {
         val normalized = normalize(text)
-        if (normalized.contains("paradero") && normalized.contains("cercan")) return true
-        val destination = Pilot.stop(text)
-        if (destination != null) {
-            pilot(destination)
-        } else {
-            val target = text.trim().replace(Regex("^(quiero ir a|llévame a|ir(?: a| al)?)\\s+", RegexOption.IGNORE_CASE), "")
-            mutable.update { it.copy(suggestedDestination = target.take(220)) }
+        val trip = state.value.trip
+        when (commandAction(normalized)) {
+            "nearest" -> return true
+            "help" -> report("Di «ruta uno», «ruta dos», «perfil silla de ruedas», «horario», «solicitar abordaje», «dónde está mi bus», «iniciar recorrido», «pausar» o «repetir».")
+            "repeat" -> lastSpeech?.let { replay(it.text, it.bus) } ?: report("Todavía no hay un aviso para repetir.")
+            "visual" -> { profile(Profile.VISUAL); report("Perfil de guía auditiva activado.") }
+            "wheelchair" -> { profile(Profile.WHEELCHAIR); report("Perfil de silla de ruedas activado.") }
+            "route1" -> cityRoute(1)
+            "route2" -> cityRoute(2)
+            "schedule" -> report(trip?.let(::describeTrip) ?: "Elige un destino para consultar el horario de demostración.")
+            "request" -> if (trip == null) report("Elige un destino antes de solicitar el abordaje.")
+                else mutable.update { it.copy(screen = Screen.TRIP, boardingPrompt = true, message = null) }
+            "status" -> report(state.value.live?.let { "Central de pruebas. ${it.stage.title}. ${it.board} hacia ${it.exit}." }
+                ?: "Estado de la simulación. ${state.value.simulation.stage.title}. ${state.value.simulation.stage.messageFor(state.value.profile)}")
+            "start" -> { navigate(Screen.BUS); if (!state.value.simulation.running) toggleSimulation() }
+            "pause" -> { navigate(Screen.BUS); if (state.value.simulation.running) toggleSimulation() }
+            "map" -> navigate(Screen.NAVIGATION)
+            else -> {
+                val destination = Pilot.stop(text)
+                if (destination != null) pilot(destination)
+                else {
+                    val target = text.trim().replace(Regex("^(quiero ir a|llévame a|ir(?: a| al)?)\\s+", RegexOption.IGNORE_CASE), "")
+                    mutable.update { it.copy(suggestedDestination = target.take(220)) }
+                }
+            }
         }
         return false
     }
 
+    fun knowsCommand(text: String) = commandAction(normalize(text)) != null || Pilot.stop(text) != null
+
+    private fun commandAction(normalized: String): String? {
+        val words = " $normalized "
+        fun has(vararg phrases: String) = phrases.any { " $it " in words }
+        return when {
+            has("repetir", "repite", "repite el aviso") -> "repeat"
+            has("ayuda", "comandos", "que puedo decir") -> "help"
+            has("perfil") && has("visual", "baja vision", "ciego", "ceguera") -> "visual"
+            has("perfil") && has("silla de ruedas", "movilidad reducida") -> "wheelchair"
+            has("ruta uno", "ruta 1", "ruta primera") -> "route1"
+            has("ruta dos", "ruta 2", "ruta segunda") -> "route2"
+            has("horario", "proxima unidad", "cuando pasa", "a que hora") -> "schedule"
+            has("solicitar abordaje", "solicita abordaje", "pedir abordaje") -> "request"
+            has("donde esta mi bus", "estado del bus", "cuando llega", "cuanto falta") -> "status"
+            has("iniciar recorrido", "inicia recorrido", "inicia simulacion", "empieza el recorrido") -> "start"
+            has("pausa", "pausar", "pausa el recorrido") -> "pause"
+            has("abre el mapa", "abrir mapa", "navegacion") -> "map"
+            has("paradero") && has("cercano", "cercana", "guiame") -> "nearest"
+            else -> null
+        }
+    }
+
+    private fun report(text: String) {
+        notice(text)
+        announce(text)
+    }
+
+    fun clearBoardingPrompt() = mutable.update { it.copy(boardingPrompt = false) }
+
+    fun cityRoute(code: Int) {
+        val stops = Pilot.network(code)
+        pilot(stops.last(), stops.first(), code)
+    }
+
     fun clearSuggestedDestination() = mutable.update { it.copy(suggestedDestination = null) }
 
-    fun pilot(destination: Stop, board: Stop? = null) {
+    fun pilot(destination: Stop, board: Stop? = null, cityRoute: Int = if (destination in Pilot.cityStops) 1 else 0) {
         search?.cancel()
-        val trip = Pilot.trip(destination, state.value.location, board)
+        val trip = Pilot.trip(destination, state.value.location, board, cityRoute)
         mutable.update {
             it.copy(screen = Screen.TRIP, trip = trip, guide = null, plans = emptyList(), selected = 0,
                 loading = false, simulation = BusSimulation(announcements = it.simulation.announcements),
@@ -166,11 +233,13 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     fun describeTrip(trip: PilotTrip) = "Viaje de demostración en bus inclusivo. Sube en ${trip.board.name} a las ${trip.departure()}. Baja en ${trip.exit.name}. Tarifa de ejemplo ${trip.fare}."
 
     fun pilotLine(trip: PilotTrip?): List<Geo> {
-        val stops = trip?.stops ?: Pilot.stops
-        return stops.zipWithNext().flatMap { (a, b) ->
-            val from = Pilot.stops.indexOf(a)
-            val to = Pilot.stops.indexOf(b)
-            val leg = roads[minOf(from, to)]
+        val code = trip?.cityRoute ?: 0
+        val corridor = Pilot.network(code)
+        val legs = if (code == 0) roads else cityRoads[code - 1]
+        return (trip?.stops ?: corridor).zipWithNext().flatMap { (a, b) ->
+            val from = corridor.indexOf(a)
+            val to = corridor.indexOf(b)
+            val leg = legs[minOf(from, to)]
             if (from < to) leg else leg.asReversed()
         }
     }
@@ -242,19 +311,19 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     fun toggleSimulation() {
         mutable.update {
             val current = it.simulation
-            val next = if (current.stage == BusStage.ARRIVED) BusSimulation(running = true, speed = current.speed, announcements = current.announcements)
+            val next = if (current.stage == BusStage.ARRIVED && !current.running && current.fraction >= 1f) BusSimulation(running = true, speed = current.speed, announcements = current.announcements)
                 else current.copy(running = !current.running)
             it.copy(simulation = next)
         }
         val current = state.value
         if (current.simulation.running && current.simulation.announcements) {
-            announce("Simulación. ${current.simulation.stage.messageFor(current.profile)}")
+            announce("Simulación. ${current.simulation.stage.messageFor(current.profile)}", bus = true)
         }
     }
 
     fun simulationRamp() {
         mutable.update { it.copy(simulation = it.simulation.copy(stage = BusStage.RAMP, elapsed = 0f, running = true)) }
-        if (state.value.simulation.announcements) announce("Simulación. ${BusStage.RAMP.message}")
+        if (state.value.simulation.announcements) announce("Simulación. ${BusStage.RAMP.message}", bus = true)
     }
 
     fun simulationSpeed() = mutable.update { it.copy(simulation = it.simulation.copy(speed = if (it.simulation.speed == 1) 2 else 1)) }
@@ -268,7 +337,7 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
         val stage = before.simulation.stage
         val next = BusStage.entries[(stage.ordinal + 1) % BusStage.entries.size]
         mutable.update { it.copy(simulation = it.simulation.copy(stage = next, elapsed = 0f, running = false)) }
-        if (before.simulation.announcements) announce("Simulación. ${next.messageFor(before.profile)}")
+        if (before.simulation.announcements) announce("Simulación. ${next.messageFor(before.profile)}", bus = true)
     }
 
     fun request(trip: PilotTrip) {

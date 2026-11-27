@@ -11,14 +11,16 @@ fun voiceIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
     putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-PE")
     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 4)
-    putExtra(RecognizerIntent.EXTRA_PROMPT, "Di tu destino o «paradero cercano»")
+    putExtra(RecognizerIntent.EXTRA_PROMPT, "Di «ruta uno», «paradero cercano» o «ayuda»")
 }
 
 class Voice(context: Context) {
     private var engine: TextToSpeech? = null
     private var ready = false
     private var closed = false
-    private var waiting: String? = null
+    private var waiting: Pair<String, Boolean>? = null
+    private var guideVoice: android.speech.tts.Voice? = null
+    private var busVoice: android.speech.tts.Voice? = null
     var unavailable: (() -> Unit)? = null
 
     init {
@@ -30,9 +32,14 @@ class Voice(context: Context) {
                 ready = tts != null && (tts.setLanguage(peru) >= TextToSpeech.LANG_AVAILABLE ||
                     tts.setLanguage(spain) >= TextToSpeech.LANG_AVAILABLE)
                 if (ready) {
+                    guideVoice = tts?.voice
+                    busVoice = tts?.voices?.filter { it.locale.language == "es" && !it.isNetworkConnectionRequired &&
+                        it != guideVoice && "notInstalled" !in it.features }
+                        ?.sortedWith(compareByDescending<android.speech.tts.Voice> { it.locale.country == "PE" }
+                            .thenByDescending { it.quality }.thenBy { it.name })?.firstOrNull()
                     tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                    waiting?.let(::say)
+                    waiting?.let { (text, bus) -> say(text, bus) }
                     waiting = null
                 }
             }
@@ -43,12 +50,15 @@ class Voice(context: Context) {
         }
     }
 
-    fun say(text: String) {
+    fun say(text: String, bus: Boolean) {
         if (closed) return
         if (!ready) {
-            waiting = text
+            waiting = text to bus
             return
         }
+        (if (bus) busVoice ?: guideVoice else guideVoice)?.let { engine?.setVoice(it) }
+        engine?.setPitch(if (bus) .87f else 1f)
+        engine?.setSpeechRate(if (bus) .90f else 1f)
         val limit = TextToSpeech.getMaxSpeechInputLength() - 20
         var remainder = text
         var queue = TextToSpeech.QUEUE_FLUSH

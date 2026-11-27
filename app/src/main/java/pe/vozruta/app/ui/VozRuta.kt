@@ -43,17 +43,22 @@ import pe.vozruta.app.model.Stop
 import pe.vozruta.app.viewmodel.JourneyState
 import pe.vozruta.app.viewmodel.JourneyViewModel
 import pe.vozruta.app.viewmodel.Screen
+import pe.vozruta.app.viewmodel.NavigationViewModel
+import pe.vozruta.app.maps.Destination
+import pe.vozruta.app.maps.TravelMode
 
 private enum class Prompt { SETTINGS, COMMAND, GLOBAL, STOPS, BOARD }
 
 @Composable
 fun VozRuta(
     model: JourneyViewModel,
+    navigator: NavigationViewModel,
+    requestNavigation: () -> Unit,
     recognize: () -> Unit,
     command: (String) -> Unit,
     locate: (Boolean) -> Unit,
     openMaps: (String, String, String) -> Unit,
-    speak: (String) -> Unit,
+    speak: (String, Boolean) -> Unit,
     stopSpeaking: () -> Unit
 ) = Theme {
     val state by model.state.collectAsStateWithLifecycle()
@@ -72,10 +77,13 @@ fun VozRuta(
     LaunchedEffect(event?.id) {
         if (event != null && consumed != event.id) {
             consumed = event.id
-            speak(event.text)
+            speak(event.text, event.bus)
         }
     }
-    val selectScreen: (Screen) -> Unit = { model.navigate(it) }
+    val selectScreen: (Screen) -> Unit = {
+        if (state.screen == Screen.NAVIGATION && it != Screen.NAVIGATION) stopSpeaking()
+        model.navigate(it)
+    }
     BackHandler(state.screen != Screen.HOME) { selectScreen(Screen.HOME) }
 
     Scaffold(
@@ -101,9 +109,16 @@ fun VozRuta(
                     }
                 }
                 when (state.screen) {
-                    Screen.HOME -> Home(state, recognize, command) { if (it == Prompt.GLOBAL) openGlobal() else prompt = it }
-                    Screen.TRIP -> TripScreen(state, model, locate, openMaps, openGlobal,
-                        { prompt = Prompt.STOPS }, { prompt = Prompt.BOARD })
+                    Screen.HOME -> Home(state, recognize, command, { selectScreen(Screen.NAVIGATION) }) {
+                        if (it == Prompt.GLOBAL) openGlobal() else prompt = it
+                    }
+                    Screen.TRIP -> TripScreen(state, model, locate, openGlobal,
+                        { prompt = Prompt.STOPS }, { prompt = Prompt.BOARD }) { stop, mode ->
+                        navigator.mode(mode)
+                        navigator.destination(Destination(stop.name, stop.geo))
+                        selectScreen(Screen.NAVIGATION)
+                    }
+                    Screen.NAVIGATION -> LiveNavigationScreen(navigator, requestNavigation, state.voiceEnabled, { speak(it, false) }, openGlobal)
                     Screen.BUS -> BusScreen(state, model) { locate(false) }
                     Screen.OPERATOR -> OperatorScreen(state, model)
                 }
@@ -120,15 +135,15 @@ fun VozRuta(
             prompt = null
             if (model.connected) model.global(from, to) else openMaps(from, to, "transit")
         }
-        Prompt.STOPS -> StopsDialog("Destinos del piloto", null, { prompt = null }) { stop ->
+        Prompt.STOPS -> StopsDialog("Destinos del piloto", Pilot.stops + Pilot.cityStops, { prompt = null }) { stop ->
             prompt = null
             model.pilot(stop)
         }
         Prompt.BOARD -> {
             state.trip?.let { trip ->
-                StopsDialog("Punto de subida", trip.exit, { prompt = null }) { stop ->
+                StopsDialog("Punto de subida", Pilot.network(trip.cityRoute).filter { it != trip.exit }, { prompt = null }) { stop ->
                     prompt = null
-                    model.pilot(trip.exit, stop)
+                    model.pilot(trip.exit, stop, trip.cityRoute)
                 }
             }
         }
@@ -159,6 +174,7 @@ fun VozRuta(
             val image = when (screen) {
                 Screen.HOME -> Icons.Default.Home
                 Screen.TRIP -> Icons.Default.Place
+                Screen.NAVIGATION -> Icons.Default.Place
                 Screen.BUS -> Icons.Default.PlayArrow
                 Screen.OPERATOR -> Icons.AutoMirrored.Filled.List
             }
@@ -171,7 +187,7 @@ fun VozRuta(
     }
 }
 
-@Composable private fun Home(state: JourneyState, recognize: () -> Unit, command: (String) -> Unit, prompt: (Prompt) -> Unit) {
+@Composable private fun Home(state: JourneyState, recognize: () -> Unit, command: (String) -> Unit, map: () -> Unit, prompt: (Prompt) -> Unit) {
     Surface(color = Color(0xFF233332), shape = RoundedCornerShape(27.dp), modifier = Modifier.fillMaxWidth()) {
         Box(Modifier.background(Brush.verticalGradient(listOf(Color(0xFF253935), Color(0xFF1C2828))))) {
             MapArtwork(Modifier.matchParentSize())
@@ -182,6 +198,7 @@ fun VozRuta(
                 Spacer(Modifier.height(2.dp))
                 Primary("Hablar con VozRuta", recognize, Modifier.fillMaxWidth(), mic = true)
                 Secondary("Escribir comando", { prompt(Prompt.COMMAND) }, Modifier.fillMaxWidth())
+                Secondary("Abrir mapa y GPS", map, Modifier.fillMaxWidth())
             }
         }
     }
@@ -326,10 +343,10 @@ fun VozRuta(
         dismissButton = { TextButton(close, Modifier.heightIn(min = 56.dp)) { Text("Cancelar") } })
 }
 
-@Composable private fun StopsDialog(title: String, excluded: Stop?, close: () -> Unit, pick: (Stop) -> Unit) {
+@Composable private fun StopsDialog(title: String, stops: List<Stop>, close: () -> Unit, pick: (Stop) -> Unit) {
     AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Pilot.stops.filter { it != excluded }.forEach { stop ->
+            stops.forEach { stop ->
                 Shortcut(stop.name, stop.area, Modifier.fillMaxWidth()) { pick(stop) }
             }
         }

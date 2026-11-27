@@ -21,10 +21,9 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import pe.vozruta.app.model.Geo
-import pe.vozruta.app.model.Pilot
-import pe.vozruta.app.model.normalize
 import pe.vozruta.app.ui.VozRuta
 import pe.vozruta.app.viewmodel.JourneyViewModel
+import pe.vozruta.app.viewmodel.NavigationViewModel
 import pe.vozruta.app.voice.Voice
 import pe.vozruta.app.voice.voiceIntent
 
@@ -32,6 +31,7 @@ import pe.vozruta.app.voice.voiceIntent
 @SuppressLint("InvalidFragmentVersionForActivityResult")
 class MainActivity : ComponentActivity() {
     private val model by viewModels<JourneyViewModel>()
+    private val navigator by viewModels<NavigationViewModel>()
     private lateinit var voice: Voice
     private var locationRequest: CancellationTokenSource? = null
     private var nearestRequested = false
@@ -43,13 +43,14 @@ class MainActivity : ComponentActivity() {
     private val recognizer = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val options = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS).orEmpty()
-        val known = options.firstOrNull { option ->
-            val command = normalize(option)
-            Pilot.stop(option) != null || ("paradero" in command && "cercan" in command)
-        }
+        val known = options.firstOrNull(model::knowsCommand)
         val text = known ?: options.firstOrNull()
         if (text.isNullOrBlank()) model.notice("No se reconoció un comando. Prueba de nuevo o escríbelo.")
         else command(text)
+    }
+    private val livePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (it[Manifest.permission.ACCESS_FINE_LOCATION] == true) navigator.activate()
+        else navigator.notice("Para seguir maniobras, concede permiso de ubicación precisa en Android.")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,7 +63,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
-            VozRuta(model, ::recognize, ::command, ::locate, ::openMaps,
+            VozRuta(model, navigator, ::activateNavigation, ::recognize, ::command, ::locate, ::openMaps,
                 speak = voice::say, stopSpeaking = voice::stop)
         }
     }
@@ -95,6 +96,12 @@ class MainActivity : ComponentActivity() {
 
     private fun command(text: String) {
         if (model.command(text)) locate(true)
+    }
+
+    private fun activateNavigation() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            navigator.activate()
+        } else livePermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
 
     private fun locate(nearest: Boolean) {
