@@ -1,0 +1,5 @@
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #202e2d; }
+canvas { display: block; }
+#caption { position: absolute; left: 12px; bottom: 11px; background: #101817; padding: 6px 9px; border-radius: 8px;
+  color: #f1facb; font: 700 10px system-ui, sans-serif; letter-spacing: .05em; pointer-events: none; }
+#caption span { color: #e8fb73; margin: 0 4px; }

@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.VozRuta" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#E8FB73</item>
+        <item name="android:windowBackground">#101416</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
